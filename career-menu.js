@@ -19,6 +19,28 @@ const gmCareer = (() => {
         ...(result.bracket?.champion === season.team ? [[season.year, 'NBA Championship · ' + season.team]] : []),
       ]);
   }
+  const commitments = ['100% guaranteed', 'It’s going to be tough, but we’ll get it done', 'I cannot make that promise'];
+  const goalsDeadline = 14;
+  function goals(save, state) {
+    const code = save.team;
+    const target = Math.min(60, Math.max(25, (save.previousWins?.[code] ?? 41) + 3));
+    const wins = state.records[code].wins;
+    const profit = teamFinance.report(save, state, code).bank - (save.startingBanks?.[code] ?? teamFinance.openingCash);
+    const finished = Boolean(state.bracket?.champion);
+    return [
+      { id: 'wins', name: 'Win ' + target + ' regular-season games', progress: wins + ' / ' + target, met: wins >= target },
+      { id: 'budget', name: 'Finish the season without a cash loss',
+        progress: profit.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }), met: profit >= 0 },
+    ].map(goal => {
+      const choice = save.ownerGoals?.[goal.id];
+      const trust = choice === 0 ? 8 : choice === 1 ? 4 : 0;
+      return { ...goal, choice, finished, delta: trust + (finished && !goal.met ? choice === 0 ? -16 : choice === 1 ? -8 : 0 : 0) };
+    });
+  }
+  function ownerTrust(save, state) {
+    return Math.max(0, Math.min(100, (save.ownerTrustByTeam?.[save.team] ?? 50)
+      + goals(save, state).reduce((sum, goal) => sum + goal.delta, 0)));
+  }
   function renewals(save, state) {
     if (!expiring(save) || !state.bracket?.champion) return [];
     const wins = state.records[save.team].wins;
@@ -29,11 +51,11 @@ const gmCareer = (() => {
     const careerBonus = Math.min(0.2, honors(save, state).reduce((sum, [, label]) =>
       sum + (label === 'Executive of the Year' ? 0.05 : 0.04), 0));
     const rating = Math.max(0, Math.min(1, 0.25 + (wins - 41) / 110 + (wins - previousWins) / 160
-      + rounds * 0.08 + careerBonus + Math.max(-0.15, Math.min(0.15, profit / 400000000))));
+      + rounds * 0.08 + careerBonus + (ownerTrust(save, state) - 50) / 250 + Math.max(-0.15, Math.min(0.15, profit / 400000000))));
     const center = 1 + 14 * rating;
     return offers(save.team, save.seed ^ 0x71882, Math.min(15, center + 3), Math.max(1, center - 3), true);
   }
-  return { offers, expiring, renewals, honors };
+  return { offers, expiring, renewals, honors, commitments, goalsDeadline, goals, ownerTrust };
 })();
 
 const liveNBA = (() => {

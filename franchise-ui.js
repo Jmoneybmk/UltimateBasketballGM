@@ -2132,11 +2132,22 @@ function playerConversation(save, state, player) {
   const speaker = direct ? player.name : relationships.agent(player.id).name;
   const own = state.owners.get(player.id) === save.team;
   const project = relationships.organizations(save, state).find(item => item.player === player.id);
+  const lastPromise = save.relationships?.promises?.findLast(item => item.id === player.id
+    && ['kept', 'broken'].includes(item.status));
+  const stats = state.averages.get(player.id);
+  const minutes = save.plans.at(-1)?.minutes?.[player.id];
+  const reducedRole = own && (stats?.GP ?? 0) >= 10 && minutes <= stats.MIN - 10
+    && (state.health.get(player.id)?.durability ?? 0) > 50;
+  const contractReply = lastPromise
+    ? (lastPromise.status === 'kept' ? 'You followed through on ' : 'I remember what happened with ') +
+      lastPromise.label + '. That matters as we discuss this deal.'
+    : 'We can review salary, guarantees, and commitments in the contract discussion.';
   const topics = [
-    ['How do you feel about your situation?', trust >= 65 ? 'Things are going well. I feel supported here.' :
+    ['How do you feel about your situation?', reducedRole ? 'My minutes have dropped. What do you see my role being going forward?' :
+      trust >= 65 ? 'Things are going well. I feel supported here.' :
       trust < 40 ? 'There are still questions about where I fit.' : 'Taking it day by day for now.'],
     ['What would you ask for?', relationships.commitment(save, state, player).requests.map(item => item.label).join(' · ') || 'Let’s start with the contract.'],
-    ['Can we talk about a contract?', 'We can review salary, guarantees, and commitments in the contract discussion.'],
+    ['Can we talk about a contract?', contractReply],
     ['Would you start a community organization?', project ? 'There’s already a program you can support.' :
       own && trust >= 55 ? 'Yes. Let’s start something that gives back to the community.' : 'I’d want to be on your roster and build more trust first.'],
   ];

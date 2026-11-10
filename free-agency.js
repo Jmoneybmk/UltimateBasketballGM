@@ -116,7 +116,8 @@ const freeAgency = (() => {
       .sort((a,b) => need(b) - need(a) || (save.day + codes.indexOf(a)) % codes.length - (save.day + codes.indexOf(b)) % codes.length);
     const bids = [];
     for (const code of clubs.slice(0, 6)) {
-      const cash = teamFinance.report(save, history, code).available;
+      const ledger = teamFinance.report(save, history, code);
+      const cash = ledger.available;
       const roster = history.rosters.get(code);
       const bestFit = unsigned.filter(player => askingSalary(player) <= cash)
         .sort((a, b) => cpuTeams.rosterValue(b, roster, history, save.teamDirections?.[code])
@@ -125,7 +126,7 @@ const freeAgency = (() => {
       if (!bestFit) continue;
       const deal = cpuDeal(code, Math.min(cash, Math.round(askingSalary(bestFit) * (1 + need(code) * 0.025))), save.day);
       const score = offerValue(bestFit, code, deal, save, history);
-      if (score >= 0.82) bids.push({ score, type: 'signing', inSeason: true, id: bestFit.id, team: code, deal, day: save.day });
+      if (score >= 0.82 && cpuTeams.canSign(save, code, ledger, deal)) bids.push({ score, type: 'signing', inSeason: true, id: bestFit.id, team: code, deal, day: save.day });
     }
     return bids.sort((a,b) => b.score - a.score);
   }
@@ -253,7 +254,10 @@ const freeAgency = (() => {
       const player = history.profiles.get(id);
       const qualifying = market.qualifying?.[id];
       const canSign = (code, deal) => rosters[code].length + (reservedSlots.get(code) ?? 0) < signingLimit(save, code)
-        && teamFinance.signingCost(deal, code === save.team) <= available.get(code);
+        && teamFinance.signingCost(deal, code === save.team) <= available.get(code)
+        && (code === save.team || cpuTeams.canSign(save, code, {
+          ...teamFinance.report({ ...save, financeActions: actions }, history, code), available: available.get(code),
+        }, deal));
       const winner = competingOffers(save, history, id, available).find(offer => {
         if (!canSign(offer.code, offer.deal)) return false;
         if (offer.code !== save.team || deal) return true;
@@ -308,7 +312,9 @@ const freeAgency = (() => {
     return { ...save, startingRosters: rosters, financeActions: actions, market: { ...save.market, open: false, results } };
   }
 
-  function signCpuFreeAgents(save, history, { rosters, available, taken, sign }, limit = Infinity, reservedSlots = new Map()) {
+  function signCpuFreeAgents(save, history, { rosters, available, actions, taken, sign }, limit = Infinity, reservedSlots = new Map()) {
+    const ledgers = new Map(codes.filter(code => code !== save.team)
+      .map(code => [code, teamFinance.report(save, history, code)]));
     const pool = [...history.profiles.values()].filter(player => !taken.has(player.id) && !history.unavailable.has(player.id)
       && !save.draftRights?.[player.id] && !save.market.qualifying?.[player.id] && !save.market.offers?.[player.id]);
     let signed = 0;
@@ -317,12 +323,15 @@ const freeAgency = (() => {
       const offers = codes.filter(code => code !== save.team && rosters[code].length + (reservedSlots.get(code) ?? 0) < cpuTarget)
         .flatMap(code => {
           const bid = Math.min(salary, Math.floor(available.get(code)));
-          return bid >= salary * 0.7 ? [{ code, deal: cpuDeal(code, bid, save.market.round) }] : [];
+          if (bid < salary * 0.7) return [];
+          const deal = cpuDeal(code, bid, save.market.round);
+          return cpuTeams.canSign(save, code, ledgers.get(code), deal) ? [{ code, deal }] : [];
         });
       const score = offer => offerValue(player, offer.code, offer.deal, save, history);
       const winner = offers.sort((a, b) => score(b) - score(a))[0];
       if (winner && score(winner) >= 0.82) {
         sign(player, winner.code, winner.deal, 'Market signing');
+        ledgers.set(winner.code, teamFinance.report({ ...save, financeActions: actions }, history, winner.code));
         if (++signed >= limit) break;
       }
     }

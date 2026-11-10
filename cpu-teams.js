@@ -80,7 +80,35 @@ const cpuTeams = (() => {
     if (save.directionCheckpoint === checkpoint && save.teamDirections) return save;
     const boards = intel({ ...save, teamDirections: null }, state, code => teamFinance.report(save, state, code).contracts);
     const directions = Object.fromEntries([...boards].map(([code, board]) => [code, board.direction]));
-    return { ...save, directionCheckpoint: checkpoint, teamDirections: directions };
+    return { ...save, directionCheckpoint: checkpoint, teamDirections: directions,
+      cpuDirectionHistory: [...(save.cpuDirectionHistory ?? []), { day: save.day + 1, directions }] };
+  }
+
+  function payrollRoom(save, code, ledger, year = 0, upkeep = arenaOps.dailyUpkeep(arenaOps.settings(save, save.day, code))) {
+    const staff = staffSim.assignments(save, code, staffSim.roles);
+    const staffPayroll = staffSim.roles.reduce((sum, role) => sum + staffSim.salary(staff[role], role), 0);
+    const committed = [...ledger.contracts.values()].reduce((sum, { deal }) => {
+      if (year >= deal.years) return sum;
+      return sum + (deal.salarySchedule?.[year]?.[0] ?? deal.salary + (deal.raise ?? 0) * year);
+    }, 0);
+    // Reserve $25M for non-payroll expenses and forecast $40M in local income.
+    const ceiling = Math.min(save.cfoBudget?.[code]?.players ?? Infinity,
+      teamFinance.mediaDistribution + 15_000_000 - staffPayroll - upkeep * 365);
+    return ceiling - committed;
+  }
+
+  function canSign(save, code, ledger, deal) {
+    if (ledger.available - teamFinance.signingCost(deal, false) < 15_000_000) return false;
+    return Array.from({ length: deal.years }, (_, year) => year).every(year =>
+      (deal.salarySchedule?.[year]?.[0] ?? deal.salary + (deal.raise ?? 0) * year) <= payrollRoom(save, code, ledger, year));
+  }
+
+  function canTrade(save, state, code, before, updated) {
+    const after = teamFinance.report(updated, state, code);
+    return after.available >= Math.min(before.available, 15_000_000) && [0, 1, 2, 3, 4].every(year => {
+      const oldRoom = payrollRoom(save, code, before, year);
+      return payrollRoom(updated, code, after, year) >= Math.min(oldRoom, 0);
+    });
   }
 
   function trade(save, state) {
@@ -144,7 +172,7 @@ const cpuTeams = (() => {
     offers.sort((a, b) => b.gain - a.gain || a.team.localeCompare(b.team) || a.id.localeCompare(b.id));
     for (const { gain, ...action } of offers.slice(0, 20)) {
       const updated = { ...save, financeActions: [...save.financeActions, action] };
-      if ([action.team, action.otherTeam].every(code => teamFinance.report(updated, state, code).available >= 0)) return action;
+      if ([action.team, action.otherTeam].every(code => canTrade(save, state, code, ledgers.get(code), updated))) return action;
     }
     return null;
   }
@@ -175,11 +203,17 @@ const cpuTeams = (() => {
         : { facility, command: 'upgrade' };
       if (!sponsor && config[facility].level >= 3) continue;
       const purchase = arenaOps.change(updated, action, code);
-      if (teamFinance.report(updated, state, code).available < purchase.cost + 15_000_000) continue;
+      const ledger = teamFinance.report(updated, state, code);
+      const spent = updated.financeActions.filter(entry => entry.type === 'facility' && entry.team === code)
+        .reduce((sum, entry) => sum + entry.cost, 0);
+      const upkeep = arenaOps.dailyUpkeep(purchase.settings);
+      if (ledger.available < purchase.cost + 15_000_000
+          || purchase.cost > 0 && (spent + purchase.cost > (save.cfoBudget?.[code]?.upgrades ?? 8_000_000)
+            || payrollRoom(updated, code, ledger, 0, upkeep) < purchase.cost)) continue;
       if (facility === 'training' && !sponsor) purchase.settings.training.days = [2, 4];
       updated.financeActions = [...updated.financeActions, { ...purchase, team: code, day: save.day, cpu: true }];
     }
     return updated;
   }
-  return { manage, positionGroup, openingDepth, rosterValue, intel, updateDirections };
+  return { manage, positionGroup, openingDepth, rosterValue, intel, updateDirections, canSign, canTrade };
 })();

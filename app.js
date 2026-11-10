@@ -2164,6 +2164,86 @@ function restartFranchise(save) {
   });
 }
 
+function frontOfficeInbox(save) {
+  const state = seasonSim.history(save);
+  const report = teamFinance.report(save, state);
+  const interview = relationships.interview(save, state);
+  const scoutReport = draftOps.prospects(save).filter(prospect => save.prospectNotes?.[prospect.id]?.scouted)
+    .sort((a, b) => (save.prospectNotes[b.id].lastScoutedDay ?? 0) - (save.prospectNotes[a.id].lastScoutedDay ?? 0));
+  const budgetLimit = save.cfoBudget?.[save.team]?.players;
+  const nextPayroll = [...report.contracts].reduce((sum, [id, { deal }]) => {
+    const next = save.extensions?.[id];
+    return sum + (next?.salary ?? (deal.years > 1 ? deal.salarySchedule?.[1]?.[0] ?? deal.salary + (deal.raise ?? 0) : 0));
+  }, 0);
+  const currentMinutes = save.plans.at(-1)?.minutes ?? {};
+  const reducedRoles = state.activeRoster.filter(player => {
+    const stats = state.averages.get(player.id);
+    return (stats?.GP ?? 0) >= 10 && (currentMinutes[player.id] ?? stats.MIN) <= stats.MIN - 10
+      && (state.health.get(player.id)?.durability ?? 0) > 50;
+  });
+  const trustedSellers = !save.market?.open && save.day <= seasonSim.tradeDeadlineFor(save)
+    ? Object.entries(save.teamDirections ?? {}).filter(([code, direction]) =>
+      code !== save.team && ['Selling', 'Rebuilding'].includes(direction) && worldRelationships.gmTrust(save, code) >= 65)
+    : [];
+  const firstCalls = trustedSellers.length ? cpuTeams.intel(save, state, code =>
+    trustedSellers.some(([seller]) => seller === code) ? teamFinance.report(save, state, code).contracts : null) : null;
+  const notes = [
+    save.rotationAlert && ['Coaching', 'Review the rotation after an availability change.', '#coaching'],
+    save.market?.open && ['Free agency', 'Review offers and results.', '#free-agency'],
+    interview && ['Press interview', interview.question, '#relationship-talk/reporter-' + save.team],
+    report.available < 25_000_000 && ['CFO', 'Available cash after commitments is ' + money(report.available), '#finances'],
+    budgetLimit != null && nextPayroll >= budgetLimit * 0.9 && ['CFO', 'Next season’s committed payroll is ' + money(nextPayroll) + ' against a ' + money(budgetLimit) + ' allocation.', '#cfo-budget'],
+    gmCareer.expiring(save) && state.bracket?.champion && ['GM contract', 'Review your next job offers.', '#gm-offers'],
+    scoutReport.length && ['Scouting', 'Recent reports near your projected picks include ' +
+      scoutReport.slice(0, 3).map(prospect => prospect.name).join(', ') + '.', '#draft-scouting/reports'],
+    ...reducedRoles.map(player => ['Player meeting', player.name + ' wants to discuss a reduction in minutes.', '#relationship-talk/' + player.id]),
+    ...trustedSellers.flatMap(([code]) => {
+      const player = firstCalls.get(code).shopping[0];
+      return player ? [['First call', teams.get(code).name + ' is willing to discuss ' + player.name + '.', '#team-intel/' + code]] : [];
+    }),
+    ...(save.relationships?.promises ?? []).filter(item => item.year === save.year).map(item => [
+      'Player commitment', (state.profiles.get(item.id)?.name ?? item.id) + ' · ' + item.kind + ' · ' + item.status,
+      '#relationship-talk/' + item.id]),
+  ].filter(Boolean);
+  operationsPage('Front office inbox', teams.get(save.team).name, `
+    <section class="panel facility-card"><h2>Decisions and updates</h2>
+    ${notes.length ? notes.map(([title, message, href]) => `<p><a href="${e(href)}">${e(title)}</a> · ${e(message)}</p>`).join('') : '<p>You’re caught up.</p>'}</section>
+    <section class="panel facility-card"><h2>${state.bracket?.champion ? 'Ownership season review' : 'Ownership season goals'}</h2>
+    ${chatThread(save, teams.get(save.team).name + ' ownership', gmCareer.ownerTrust(save, state),
+      state.bracket?.champion ? 'Let’s review our goals.' : 'Here’s what we want to see this season. What can you commit to?')}
+    <p>Owner trust <strong>${gmCareer.ownerTrust(save, state)}/100</strong></p>
+    ${save.day < gmCareer.goalsDeadline ? '<p class="note">Respond during the first 14 franchise days. A guarantee adds 8 trust now and costs 16 if missed. A tough commitment adds 4 now and costs 8 if missed. Declining keeps trust steady.</p>' : ''}
+    ${gmCareer.goals(save, state).map(goal => `<article><h3>${e(goal.name)}</h3>
+      <p>${e(goal.progress)}${goal.finished ? ' · ' + (goal.met ? 'Achieved' : 'Missed') : ''}</p>
+      ${goal.choice != null ? `<p>${e(gmCareer.commitments[goal.choice])} · ${goal.delta >= 0 ? '+' : ''}${goal.delta} trust</p>` :
+        save.day >= gmCareer.goalsDeadline ? '<p>No commitment made.</p>' : `<div class="franchise-actions">${gmCareer.commitments.map((label, choice) =>
+          `<button data-owner-goal="${goal.id}" data-choice="${choice}">${e(label)}</button>`).join('')}</div>`}</article>`).join('')}
+    <p id="save-error" role="alert"></p></section>
+    <section class="panel facility-card"><h2>GM career timeline</h2>
+    ${[...(save.pastSeasons ?? []), save].reverse().map(season => {
+      const moves = season.financeActions.filter(action => ['trade', 'signing'].includes(action.type)
+        && [action.team ?? season.team, action.otherTeam].includes(season.team));
+      for (const [key, negotiation] of Object.entries(season.negotiations ?? {})) {
+        if (key.startsWith('extension:') && negotiation.accepted && negotiation.team === season.team) {
+          moves.push({ type: 'extension', id: key.slice('extension:'.length), day: negotiation.day });
+        }
+      }
+      moves.sort((a, b) => b.day - a.day);
+      return `<details><summary>${seasonLabel(season.year)} · ${e(season.team)} · ${moves.length} roster moves</summary>
+      ${season.ownerReview ? `<p>Final owner trust ${season.ownerReview.trust}/100</p>${season.ownerReview.goals.map(goal =>
+        `<p>${e(goal.name)} · ${goal.met ? 'Achieved' : 'Missed'} · ${goal.delta >= 0 ? '+' : ''}${goal.delta} trust</p>`).join('')}` : ''}
+      ${moves.map(action => {
+        const ids = action.type === 'trade' ? seasonSim.tradePlayers(action).flat() : [action.id];
+        const names = ids.map(id => state.profiles.get(id)?.name ?? id);
+        return `<p>Day ${action.day + 1} · ${e(action.type)} · ${e(names.join(', ') || action.otherTeam || '')}</p>`;
+      }).join('')}</details>`;
+    }).join('')}
+    ${gmCareer.honors(save, state).map(([year, label]) => `<p>${seasonLabel(year)} · ${e(label)}</p>`).join('')}</section>`);
+  for (const button of document.querySelectorAll('[data-owner-goal]')) {
+    button.onclick = () => updateFranchise(() => seasonSim.answerOwnerGoal(save, button.dataset.ownerGoal, Number(button.dataset.choice)));
+  }
+}
+
 function franchise() {
   let save;
   try {
@@ -2206,6 +2286,7 @@ function franchise() {
         : save.handoff ? '<a class="primary-link" href="#season-handoff">Review season handoff</a>' : gameActions}
     </div><p id="save-error" role="alert"></p></div>
   </section>
+  <p><a class="primary-link" href="#front-office-inbox">Front office inbox &amp; ownership goals →</a></p>
   ${franchiseMenu(team)}
   <div class="division-grid">
     <section class="panel"><h3>${complete ? 'Season complete' : 'Current day slate'}</h3>
@@ -2403,6 +2484,7 @@ function render() {
   else if (page === 'fan-conversation' && activeSave) fanConversation(activeSave, id);
   else if (page === 'cfo-budget' && activeSave) cfoBudgetScreen(activeSave);
   else if (page === 'gm-offers') gmOffers(activeSave, id);
+  else if (page === 'front-office-inbox') savedFacility(frontOfficeInbox);
   else if (['franchise', 'franchise-hub'].includes(page)) activeSave ? franchise() : franchiseEntry(id);
   else if (!activeSave && ['scores', 'nba-box'].includes(page)) nbaLiveScores(id);
   else if (!activeSave && liveNBA.current() && (page === 'players' || page === 'team' && teams.has(id))) liveRoster(page === 'team' ? id : undefined);

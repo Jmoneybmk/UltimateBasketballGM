@@ -198,7 +198,9 @@ const relationships = (() => {
     }, 0);
     const pending = promises.some(promise => promise.status === 'pending' &&
       (promise.kind === 'teammate' || meets(save, state, player.id, promise, deal)));
-    return (trust - 29) * 0.005 + boost + (pending ? 0.08 : 0);
+    const history = data.promises.filter(promise => promise.id === player.id && promise.status !== 'pending');
+    const memory = history.slice(-4).reduce((value, promise) => value + (promise.status === 'kept' ? 0.025 : -0.04), 0);
+    return (trust - 29) * 0.005 + boost + memory + (pending ? 0.08 : 0);
   }
 
   function copy(save) {
@@ -219,6 +221,18 @@ const relationships = (() => {
   };
 
   function interview(save, state) {
+    if (save.day >= seasonSim.playoffStart) {
+      const interviews = read(save).interviews ?? {};
+      const prefix = [save.year, save.team].join('/') + '/';
+      const previousTrade = Object.keys(interviews).findLast(key => key.startsWith(prefix) && key.split('/')[3] === 'trade');
+      const key = prefix + 'postseason-review';
+      if (previousTrade && !interviews[key]) {
+        const other = previousTrade.split('/')[4];
+        const result = state.bracket?.rounds?.[0]?.some(series => [series.home, series.away].includes(save.team))
+          ? 'as the playoffs begin' : 'now that the regular season is over';
+        return { key, other, question: 'You spoke about the ' + other + ' trade earlier this year. How do you assess it ' + result + '?' };
+      }
+    }
     const games = state.results.filter(game => game.home === save.team || game.away === save.team);
     const game = games.findLast((entry, index) =>
       (index + 1) % 5 === 0 || Math.abs(entry.homeScore - entry.awayScore) >= 25);

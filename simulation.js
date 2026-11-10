@@ -60,6 +60,13 @@ const seasonSim = (() => {
     .sort(rotationOrder)]));
   const defaultPlan = (code, roster = rotations.get(code)) =>
     Object.fromEntries(roster.map((player, index) => [player.id, rotationMinutes[index] ?? 0]));
+  function cpuRotationPlan(save, code, roster, day) {
+    const direction = save.cpuDirectionHistory?.findLast(entry => entry.day <= day)?.directions[code];
+    if (direction !== 'Rebuilding' && direction !== 'Selling') return defaultPlan(code, roster);
+    const bonus = direction === 'Rebuilding' ? 5 : 2;
+    const value = player => rotationValue(player) + ((player.experience ?? 10) < 4 ? bonus : 0);
+    return defaultPlan(code, [...roster].sort((a, b) => value(b) - value(a)));
+  }
   function orderedRoster(roster, order, minutes) {
     if (!order) return [...roster].sort((a, b) => minutes[b.id] - minutes[a.id]);
     const slots = new Map(order.map((id, index) => [id, index]));
@@ -520,7 +527,7 @@ const seasonSim = (() => {
       return controlled ? castRatings(raw, tactics.play, tactics.defense, tactics.shotProfile ?? 0, tactics.scoring?.[0] === id) : raw;
     };
     return slate.map(([home, away], index) => {
-      const rotation = code => cast ? cast.rotations.get(code) : health ? allocateMinutes(code, code === save.team ? plan : defaultPlan(code, rosters.get(code)),
+      const rotation = code => cast ? cast.rotations.get(code) : health ? allocateMinutes(code, code === save.team ? plan : cpuRotationPlan(save, code, rosters.get(code), day),
         health, rosters.get(code), code === save.team ? order : undefined)
         : rotations.get(code).slice(0, rotationMinutes.length).map((p, i) => ({ id: p.id, minutes: rotationMinutes[i] }));
       const homeRotation = rotation(home);
@@ -729,7 +736,7 @@ const seasonSim = (() => {
     const side = cast.home === code ? 'homeBox' : 'awayBox';
     const prior = new Map();
     for (const period of cast.periods) for (const line of period[side]) prior.set(line.id, (prior.get(line.id) ?? 0) + line.MIN);
-    const plan = code === save.team ? reconcilePlan(code, save.plans.at(-1)?.minutes, roster) : defaultPlan(code, roster);
+    const plan = code === save.team ? reconcilePlan(code, save.plans.at(-1)?.minutes, roster) : cpuRotationPlan(save, code, roster, save.day);
     const order = code === save.team ? save.plans.at(-1)?.order : undefined;
     const priorRotation = code === save.team ? cast.minutes : null;
     const players = orderedRoster(roster, order, plan).map(player => {
@@ -1056,6 +1063,14 @@ const seasonSim = (() => {
     write(cpuTeams.openingDepth(initial, history(initial), true));
   }
 
+  function answerOwnerGoal(expected, id, choice) {
+    const save = load();
+    if (JSON.stringify(save) !== JSON.stringify(expected) || save.day >= gmCareer.goalsDeadline
+        || !Number.isInteger(choice) || !gmCareer.commitments[choice] || Object.hasOwn(save.ownerGoals ?? {}, id)
+        || !gmCareer.goals(save, history(save)).some(goal => goal.id === id)) throw new Error('This goal is closed.');
+    write({ ...save, ownerGoals: { ...save.ownerGoals, [id]: choice } });
+  }
+
   function advance(expected) {
     const save = load();
     if (save?.market?.open) throw new Error('Close free agency before starting the regular season.');
@@ -1123,7 +1138,7 @@ const seasonSim = (() => {
           .sort((a, b) => Math.abs(a.rank - pick) - Math.abs(b.rank - pick))[0];
         if (!prospect) continue;
         const prior = notes[prospect.id] ?? {};
-        notes[prospect.id] = { ...prior, scouted: true,
+        notes[prospect.id] = { ...prior, scouted: true, lastScoutedDay: week * 7,
           coverage: Math.min(100, (prior.coverage ?? (prior.scouted ? 35 : 0)) + gain) };
       }
     }
@@ -1710,6 +1725,7 @@ const seasonSim = (() => {
     if (save.gm && gmCareer.expiring(save) && !save.nextGmJob) throw new Error('Accept a GM job before opening free agency.');
     const nextTeam = save.nextGmJob?.team ?? save.team;
     const { pastSeasons, teammateCarry, reporterCarry, ...archived } = save;
+    archived.ownerReview = { goals: gmCareer.goals(save, state), trust: gmCareer.ownerTrust(save, state) };
     archived.finalsChampionBoost ??= 0.2;
     const previous = pastSeasons.length ? history(pastSeasons.at(-1)).averages : null;
     const next = teamFinance.nextSeason(save, state, new Set(declinedOptions));
@@ -1789,6 +1805,7 @@ const seasonSim = (() => {
     const rookies = save.rookiePool ?? league.players.filter(player => player.experience === 0).map(player => player.id);
     write({
       ...next, team: nextTeam, day: 0, year: save.year + 1, seed: (Math.imul(save.seed, 1664525) + 1013904223) >>> 0,
+      ownerTrustByTeam: { ...save.ownerTrustByTeam, [save.team]: gmCareer.ownerTrust(save, state) },
       gm: save.nextGmJob ? { ...save.gm, contract: { ...save.nextGmJob, startYear: save.year + 1 } } : save.gm,
       rulesVersion: 2, rookiePool: [...rookies.filter(id => !state.averages.has(id)), ...entrants.map(player => player.id)],
       previousImpact: Object.fromEntries([...state.averages].map(([id, stats]) => [id, nbaAwards.impact(stats)])),
@@ -2491,7 +2508,7 @@ const seasonSim = (() => {
     return cachedHistory;
   }
 
-  return { setScoutingPriority, setAutoScouting, setCfoBudget, gmContact, gmContactDay, allStarAction, allStarElectionDates, setAwardOverride, storageKey, lastDay, date, fixtures, load, start, startCareer, saveSlots, openSlot, deleteSlot, quitSlot, chooseGmJob, advance, history, boxFields, percentage,
+  return { answerOwnerGoal, setScoutingPriority, setAutoScouting, setCfoBudget, gmContact, gmContactDay, allStarAction, allStarElectionDates, setAwardOverride, storageKey, lastDay, date, fixtures, load, start, startCareer, saveSlots, openSlot, deleteSlot, quitSlot, chooseGmJob, advance, history, boxFields, percentage,
     setPlan, rebuildRotation, currentPlan, currentSlots, positionStarters, currentGameplan, setGameplan, defaultPlan, tier, minuteLimit, allocateMinutes, setTraining, currentTraining, saveFinanceAction,
     tradeDeadline, tradeDeadlineFor, leagueMeeting, qualifyingCandidates, tradePlayers, playoffStart, allStarDay, allStarDayFor, retirementCandidates, rollover, unretireJersey, finishHandoff, marketAction, negotiateContract, delegateContract, delegateFrontOffice, staffAssignmentAction, baseOverall, baseTeamOverall, effectiveRatings, currentOrder,
     restart, advanceTo, postseasonAction, firstPlayoffGame, revisedRules, assignStaff, conversation, repairRotation, resolveInjuryRotation, setAutoInjuryRotation, fatigueLoss, editPlayer, acknowledgeForfeit, serviceYears, prospectAction, revealLottery, draftAction, rankProspect, releaseDraftRight, signDraftRight, simcastAction, castMinutes, castScore, castClock, challengeableFoul, castComplete, castPlays, castDefenses, castCoverage };

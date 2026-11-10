@@ -671,8 +671,8 @@ const teamFinance = (() => {
     if (action.funding !== 'personal' && (action.type !== 'facility' || action.cost > 0) && report(updated, history).available < 0) {
       throw new Error('The team cannot afford this while covering its existing obligations.');
     }
-    if (action.type === 'trade' && report(updated, history, action.otherTeam).available < 0) {
-      throw new Error('The other team cannot cover the trade’s obligations.');
+    if (action.type === 'trade' && !cpuTeams.canTrade(save, history, action.otherTeam, report(save, history, action.otherTeam), updated)) {
+      throw new Error('The other team declined because the deal exceeds its cash reserve or payroll budget.');
     }
     return updated;
   }

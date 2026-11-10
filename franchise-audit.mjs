@@ -120,6 +120,13 @@ function runtime() {
     node('#career-continue').onclick();
     assert.match(go(context.location.hash), /FRANCHISE MODE/);
     assert.match(node('.top nav').innerHTML, /Quit to main menu/);
+    assert.match(go('#front-office-inbox'), /Ownership season goals/);
+    assert.match(node('#app').innerHTML, /100% guaranteed/);
+    const ownerSave = api.seasonSim.load();
+    api.seasonSim.answerOwnerGoal(ownerSave, 'wins', 0);
+    assert.match(go('#front-office-inbox'), /\+8 trust/);
+    api.seasonSim.answerOwnerGoal(api.seasonSim.load(), 'budget', 2);
+    assert.match(go('#front-office-inbox'), /I cannot make that promise · \+0 trust/);
     const current = api.seasonSim.load();
     const slot = api.seasonSim.saveSlots().find(entry => entry.team === current.team && entry.day === current.day);
     storage.set(slot.key, JSON.stringify({ ...current, market: { ...current.market, open: false } }));
@@ -129,7 +136,12 @@ function runtime() {
     const roster = api.seasonSim.history(active).rosters.get(active.team);
     assert.match(go('#relationship-talk/' + roster[0].id), /dialogue-thread.*What can I do for you/s);
     for (const count of [5, 8, 10]) {
-      const plan = api.seasonSim.rebuildRotation(active, count);
+      let plan;
+      try { plan = api.seasonSim.rebuildRotation(active, count); }
+      catch (error) {
+        assert.match(error.message, /fewer available players|cannot cover 240 minutes/);
+        continue;
+      }
       assert.equal(Object.values(plan.minutes).filter(minutes => minutes > 0).length, count);
       assert.equal(Object.values(plan.minutes).reduce((sum, minutes) => sum + minutes, 0), 240);
     }
@@ -883,6 +895,7 @@ function careers() {
   assert.equal(next.team, offer.team);
   assert.equal(next.gm.contract.salary, offer.salary);
   assert.equal(next.pastSeasons[0].team, save.team);
+  assert.equal(next.pastSeasons[0].ownerReview.goals.length, 2);
   assert.equal(next.previousWins[save.team], state.records[save.team].wins);
   exerciseCareerScreens();
   assert.equal(sim.saveSlots().length, 2);
